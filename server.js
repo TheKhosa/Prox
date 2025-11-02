@@ -84,7 +84,9 @@ wss.on('connection', async (clientWs) => {
 // Serve main page
 app.get('/', async (req, res) => {
     // Get the WebSocket URL for our proxy
-    const wsProtocol = req.protocol === 'https' ? 'wss:' : 'ws:';
+    // Check X-Forwarded-Proto for reverse proxy setups (like render.com)
+    const protocol = req.get('X-Forwarded-Proto') || req.protocol;
+    const wsProtocol = protocol === 'https' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${req.get('host')}`;
 
     res.send(`
