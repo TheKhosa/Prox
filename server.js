@@ -1,292 +1,262 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
+const axios = require('axios');
 const path = require('path');
-const http = require('http');
-const { Server } = require('socket.io');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    },
-    transports: ['websocket'],  // WebSocket only, skip polling
-    perMessageDeflate: {        // Enable compression
-        threshold: 1024
-    }
-});
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-const BROWSERLESS_URL = 'ws://145.239.253.161:3000';
-let browser = null;
-let page = null;
-let isReady = false;
-let cdpSession = null;
+const BROWSERLESS_URL = 'http://145.239.253.161:3000';
 
-// Initialize browser
-async function initBrowser() {
+// Get active browser session
+async function getBrowserSession() {
     try {
-        console.log('Connecting to browserless at', BROWSERLESS_URL);
-
-        browser = await puppeteer.connect({
-            browserWSEndpoint: BROWSERLESS_URL
-        });
-
-        const pages = await browser.pages();
-        page = pages[0] || await browser.newPage();
-
-        // Set default viewport
-        await page.setViewport({
-            width: 1280,
-            height: 720,
-            deviceScaleFactor: 1
-        });
-
-        console.log('Navigating to google.co.uk...');
-        await page.goto('https://www.google.co.uk', {
-            waitUntil: 'networkidle2',
-            timeout: 30000
-        });
-
-        // Set up CDP session for screencast
-        cdpSession = await page.target().createCDPSession();
-
-        // Start screencast optimized for network performance
-        await cdpSession.send('Page.startScreencast', {
-            format: 'jpeg',
-            quality: 60,        // Reduced from 90 for smaller frames
-            maxWidth: 1280,     // Reduced from 1920
-            maxHeight: 720,     // Reduced from 1080
-            everyNthFrame: 2    // 30fps instead of 60fps for lower bandwidth
-        });
-
-        // Handle screencast frames
-        cdpSession.on('Page.screencastFrame', async ({data, metadata, sessionId}) => {
-            // Acknowledge frame receipt
-            await cdpSession.send('Page.screencastFrameAck', {sessionId});
-
-            // Broadcast frame to all connected clients
-            io.emit('frame', {
-                image: data,
-                metadata
-            });
-        });
-
-        isReady = true;
-        console.log('Browser ready with optimized streaming!');
-        console.log('\n🚀 Interactive Browser Server (Network Optimized)');
-        console.log(`\n👉 Open in browser: http://localhost:${PORT}`);
-        console.log('\nFeatures:');
-        console.log('  ✓ 30fps video stream (optimized for network)');
-        console.log('  ✓ Quality: 60, Resolution: 1280x720');
-        console.log('  ✓ WebSocket compression enabled');
-        console.log('  ✓ Click, type, scroll, zoom');
-        console.log('  ✓ Connected to browserless');
-        console.log('\nBrowser is ready!');
-
+        const response = await axios.get(`${BROWSERLESS_URL}/json/list`);
+        return response.data[0];
     } catch (error) {
-        console.error('Browser init error:', error);
-        isReady = false;
+        console.error('Failed to get browser session:', error.message);
+        return null;
     }
 }
 
-// Socket.io connections
-io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
+// Serve main page
+app.get('/', async (req, res) => {
+    const session = await getBrowserSession();
 
-    socket.on('disconnect', () => {
-        console.log('Client disconnected:', socket.id);
-    });
-});
-
-// Get status
-app.get('/status', (req, res) => {
-    res.json({ ready: isReady });
-});
-
-// Handle click
-app.post('/click', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
+    if (!session) {
+        return res.status(503).send('Browserless not available');
     }
 
-    try {
-        const { x, y, width, height } = req.body;
+    // Extract the WebSocket URL for CDP
+    const wsUrl = session.webSocketDebuggerUrl.replace('ws://', '');
 
-        console.log(`Click at: ${x}, ${y}`);
+    res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Remote</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-        // Update viewport if needed
-        if (width && height) {
-            const viewport = page.viewport();
-            if (viewport.width !== width || viewport.height !== height) {
-                await page.setViewport({
-                    width: parseInt(width),
-                    height: parseInt(height),
-                    deviceScaleFactor: 1
+        body {
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+
+        #browserView {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            display: block;
+            cursor: pointer;
+        }
+
+        #status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #0f0;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Connecting...</div>
+    <img id="browserView" src="" alt="Browser View">
+
+    <script>
+        const wsUrl = 'ws://${wsUrl}';
+        let ws = null;
+        let commandId = 1;
+        let viewportWidth = window.innerWidth;
+        let viewportHeight = window.innerHeight;
+
+        const status = document.getElementById('status');
+        const browserView = document.getElementById('browserView');
+
+        // Connect to CDP WebSocket
+        function connect() {
+            status.textContent = 'Connecting to CDP...';
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                status.textContent = 'Connected';
+
+                // Start screencast
+                sendCommand('Page.startScreencast', {
+                    format: 'jpeg',
+                    quality: 80,
+                    maxWidth: viewportWidth,
+                    maxHeight: viewportHeight,
+                    everyNthFrame: 1
                 });
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                // Handle screencast frame
+                if (message.method === 'Page.screencastFrame') {
+                    const { data, sessionId } = message.params;
+
+                    // Display frame
+                    browserView.src = 'data:image/jpeg;base64,' + data;
+
+                    // Acknowledge frame
+                    sendCommand('Page.screencastFrameAck', { sessionId });
+                }
+            };
+
+            ws.onerror = (error) => {
+                status.textContent = 'Connection error';
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                status.textContent = 'Disconnected. Reconnecting...';
+                setTimeout(connect, 2000);
+            };
+        }
+
+        function sendCommand(method, params = {}) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    id: commandId++,
+                    method: method,
+                    params: params
+                }));
             }
         }
 
-        // Perform click
-        await page.mouse.click(x, y);
+        // Handle click
+        browserView.addEventListener('click', (event) => {
+            const rect = browserView.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
 
-        res.json({ success: true });
+            const scaleX = viewportWidth / rect.width;
+            const scaleY = viewportHeight / rect.height;
 
-    } catch (error) {
-        console.error('Click error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+            const actualX = Math.round(x * scaleX);
+            const actualY = Math.round(y * scaleY);
 
-// Handle keyboard input
-app.post('/type', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
+            // Send mouse click via CDP
+            sendCommand('Input.dispatchMouseEvent', {
+                type: 'mousePressed',
+                x: actualX,
+                y: actualY,
+                button: 'left',
+                clickCount: 1
+            });
 
-    try {
-        const { text, key } = req.body;
-
-        console.log(`Type: ${text || key}`);
-
-        if (text) {
-            await page.keyboard.type(text);
-        } else if (key) {
-            await page.keyboard.press(key);
-        }
-
-        res.json({ success: true });
-
-    } catch (error) {
-        console.error('Type error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Navigate to URL
-app.post('/navigate', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
-
-    try {
-        const { url } = req.body;
-
-        console.log(`Navigating to: ${url}`);
-
-        await page.goto(url, {
-            waitUntil: 'networkidle2',
-            timeout: 30000
+            setTimeout(() => {
+                sendCommand('Input.dispatchMouseEvent', {
+                    type: 'mouseReleased',
+                    x: actualX,
+                    y: actualY,
+                    button: 'left',
+                    clickCount: 1
+                });
+            }, 50);
         });
 
-        res.json({ success: true });
+        // Handle keyboard
+        document.addEventListener('keydown', (event) => {
+            if (event.target.tagName === 'INPUT') return;
 
-    } catch (error) {
-        console.error('Navigate error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+            event.preventDefault();
 
-// Handle scroll
-app.post('/scroll', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
-
-    try {
-        const { deltaX, deltaY } = req.body;
-
-        console.log(`Scroll: deltaX=${deltaX}, deltaY=${deltaY}`);
-
-        // Scroll using mouse wheel
-        await page.mouse.wheel({ deltaX: deltaX || 0, deltaY: deltaY || 0 });
-
-        res.json({ success: true });
-
-    } catch (error) {
-        console.error('Scroll error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Handle zoom
-app.post('/zoom', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
-
-    try {
-        const { scale } = req.body;
-
-        console.log(`Zoom to scale: ${scale}`);
-
-        // Get current viewport
-        const viewport = page.viewport();
-
-        // Update viewport with new scale
-        await page.setViewport({
-            width: viewport.width,
-            height: viewport.height,
-            deviceScaleFactor: scale || 1
+            sendCommand('Input.dispatchKeyEvent', {
+                type: 'keyDown',
+                key: event.key,
+                code: event.code,
+                text: event.key.length === 1 ? event.key : undefined
+            });
         });
 
-        res.json({ success: true });
+        document.addEventListener('keyup', (event) => {
+            if (event.target.tagName === 'INPUT') return;
 
-    } catch (error) {
-        console.error('Zoom error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+            event.preventDefault();
 
-// Reload page
-app.post('/reload', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
-
-    try {
-        console.log('Reloading page...');
-
-        await page.reload({
-            waitUntil: 'networkidle2',
-            timeout: 30000
+            sendCommand('Input.dispatchKeyEvent', {
+                type: 'keyUp',
+                key: event.key,
+                code: event.code
+            });
         });
 
-        res.json({ success: true });
+        // Handle scroll
+        browserView.addEventListener('wheel', (event) => {
+            event.preventDefault();
 
-    } catch (error) {
-        console.error('Reload error:', error);
-        res.status(500).json({ error: error.message });
-    }
+            sendCommand('Input.dispatchMouseEvent', {
+                type: 'mouseWheel',
+                x: 0,
+                y: 0,
+                deltaX: event.deltaX,
+                deltaY: event.deltaY
+            });
+        }, { passive: false });
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            viewportWidth = window.innerWidth;
+            viewportHeight = window.innerHeight;
+
+            // Restart screencast with new dimensions
+            sendCommand('Page.stopScreencast');
+            setTimeout(() => {
+                sendCommand('Page.startScreencast', {
+                    format: 'jpeg',
+                    quality: 80,
+                    maxWidth: viewportWidth,
+                    maxHeight: viewportHeight,
+                    everyNthFrame: 1
+                });
+            }, 100);
+        });
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
+    `);
 });
 
-// Serve test.html as index
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'test.html'));
+// Get browser info
+app.get('/info', async (req, res) => {
+    const session = await getBrowserSession();
+    res.json(session || { error: 'No browser session' });
 });
 
 // Start server
 const PORT = 3001;
 
-initBrowser().then(() => {
-    server.listen(PORT, () => {
-        console.log(`Server listening on port ${PORT}`);
-    });
-}).catch(error => {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-});
-
-// Cleanup on exit
-process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
-    if (browser) {
-        await browser.disconnect();
-    }
-    process.exit(0);
+app.listen(PORT, () => {
+    console.log(`\n🚀 Browser Remote (CDP Direct)`);
+    console.log(`\n👉 Open: http://localhost:${PORT}`);
+    console.log(`\nDirect Chrome DevTools Protocol connection`);
+    console.log(`Connected to: ${BROWSERLESS_URL}`);
+    console.log(`\nFeatures:`);
+    console.log(`  ✓ Native CDP screencast`);
+    console.log(`  ✓ Direct WebSocket to browser`);
+    console.log(`  ✓ Full interactivity (click, type, scroll)`);
+    console.log(`  ✓ No middleware overhead`);
+    console.log(`\nBrowser view only - no DevTools UI\n`);
 });

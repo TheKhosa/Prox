@@ -1,7 +1,7 @@
 {
-  "name": "interactive-browser",
-  "version": "1.0.0",
-  "description": "Interactive browser with Puppeteer",
+  "name": "browser-remote",
+  "version": "2.0.0",
+  "description": "Simple proxy to browserless native DevTools interface",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,9 +9,6 @@
   "dependencies": {
     "axios": "^1.13.1",
     "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "puppeteer-core": "^21.11.0",
-    "socket.io": "^4.8.1",
-    "ws": "^8.18.3"
+    "express": "^4.18.2"
   }
 }
