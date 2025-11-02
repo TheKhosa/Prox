@@ -246,7 +246,7 @@ app.get('/info', async (req, res) => {
 });
 
 // Start server
-const PORT = 3001;
+const PORT = process.env.PORT || 3002;
 
 app.listen(PORT, () => {
     console.log(`\n🚀 Browser Remote (CDP Direct)`);
