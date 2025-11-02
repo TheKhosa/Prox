@@ -14,14 +14,22 @@ app.use(express.static(__dirname));
 
 const BROWSERLESS_URL = 'http://145.239.253.161:3000';
 
-// Get active browser session
-async function getBrowserSession() {
+// Create new browser session
+async function createBrowserSession() {
     try {
-        const response = await axios.get(`${BROWSERLESS_URL}/json/list`);
-        return response.data[0];
+        // Create a new browser page/session
+        const response = await axios.put(`${BROWSERLESS_URL}/json/new`);
+        return response.data;
     } catch (error) {
-        console.error('Failed to get browser session:', error.message);
-        return null;
+        console.error('Failed to create browser session:', error.message);
+        // Fallback: try to get existing session
+        try {
+            const listResponse = await axios.get(`${BROWSERLESS_URL}/json/list`);
+            return listResponse.data[0];
+        } catch (fallbackError) {
+            console.error('Failed to get fallback session:', fallbackError.message);
+            return null;
+        }
     }
 }
 
@@ -39,8 +47,8 @@ wss.on('connection', async (clientWs) => {
         isConnecting = true;
 
         try {
-            // Get fresh browserless session
-            const session = await getBrowserSession();
+            // Create fresh browserless session
+            const session = await createBrowserSession();
             if (!session) {
                 console.error('No browserless session available');
                 if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -338,7 +346,7 @@ app.get('/', async (req, res) => {
 
 // Get browser info
 app.get('/info', async (req, res) => {
-    const session = await getBrowserSession();
+    const session = await createBrowserSession();
     res.json(session || { error: 'No browser session' });
 });
 
