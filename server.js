@@ -29,56 +29,97 @@ async function getBrowserSession() {
 wss.on('connection', async (clientWs) => {
     console.log('Client WebSocket connected');
 
-    // Get browserless session
-    const session = await getBrowserSession();
-    if (!session) {
-        clientWs.send(JSON.stringify({ error: 'Browserless not available' }));
-        clientWs.close();
-        return;
-    }
+    let browserlessWs = null;
+    let isConnecting = false;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 3;
 
-    // Connect to browserless CDP
-    const browserlessWs = new WebSocket(session.webSocketDebuggerUrl);
+    async function connectToBrowserless() {
+        if (isConnecting) return;
+        isConnecting = true;
+
+        try {
+            // Get fresh browserless session
+            const session = await getBrowserSession();
+            if (!session) {
+                console.error('No browserless session available');
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    setTimeout(() => {
+                        isConnecting = false;
+                        connectToBrowserless();
+                    }, 2000);
+                } else {
+                    clientWs.send(JSON.stringify({ error: 'Browserless not available' }));
+                    clientWs.close();
+                }
+                return;
+            }
+
+            console.log('Connecting to browserless:', session.webSocketDebuggerUrl);
+            browserlessWs = new WebSocket(session.webSocketDebuggerUrl);
+
+            browserlessWs.on('open', () => {
+                console.log('Connected to browserless CDP');
+                reconnectAttempts = 0;
+                isConnecting = false;
+            });
+
+            browserlessWs.on('message', (message) => {
+                if (clientWs.readyState === WebSocket.OPEN) {
+                    clientWs.send(message);
+                }
+            });
+
+            browserlessWs.on('error', (error) => {
+                console.error('Browserless WebSocket error:', error.message);
+                isConnecting = false;
+            });
+
+            browserlessWs.on('close', (code, reason) => {
+                console.log('Browserless WebSocket closed:', code, reason.toString());
+                isConnecting = false;
+
+                // Try to reconnect if client is still connected
+                if (clientWs.readyState === WebSocket.OPEN && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting to browserless (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                    setTimeout(() => connectToBrowserless(), 2000);
+                } else {
+                    clientWs.close();
+                }
+            });
+
+        } catch (error) {
+            console.error('Error connecting to browserless:', error);
+            isConnecting = false;
+            clientWs.close();
+        }
+    }
 
     // Proxy messages from client to browserless
     clientWs.on('message', (message) => {
-        if (browserlessWs.readyState === WebSocket.OPEN) {
+        if (browserlessWs && browserlessWs.readyState === WebSocket.OPEN) {
             browserlessWs.send(message);
         }
     });
 
-    // Proxy messages from browserless to client
-    browserlessWs.on('message', (message) => {
-        if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(message);
+    clientWs.on('close', () => {
+        console.log('Client WebSocket closed');
+        if (browserlessWs) {
+            browserlessWs.close();
         }
     });
 
-    // Handle browserless connection open
-    browserlessWs.on('open', () => {
-        console.log('Connected to browserless CDP');
-    });
-
-    // Handle errors and cleanup
-    browserlessWs.on('error', (error) => {
-        console.error('Browserless WebSocket error:', error);
-        clientWs.close();
-    });
-
-    browserlessWs.on('close', () => {
-        console.log('Browserless WebSocket closed');
-        clientWs.close();
-    });
-
-    clientWs.on('close', () => {
-        console.log('Client WebSocket closed');
-        browserlessWs.close();
-    });
-
     clientWs.on('error', (error) => {
-        console.error('Client WebSocket error:', error);
-        browserlessWs.close();
+        console.error('Client WebSocket error:', error.message);
+        if (browserlessWs) {
+            browserlessWs.close();
+        }
     });
+
+    // Initial connection
+    await connectToBrowserless();
 });
 
 // Serve main page
