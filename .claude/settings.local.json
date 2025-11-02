@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m http.server:*)",
+      "Bash(python browserless_test.py:*)",
+      "Bash(python browserless_api.py:*)",
+      "Bash(dir:*)",
+      "Bash(python interactive_server.py:*)",
+      "Bash(node --version:*)",
+      "Bash(npm install:*)",
+      "Bash(node server.js:*)",
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
