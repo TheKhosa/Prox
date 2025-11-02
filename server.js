@@ -79,7 +79,9 @@ app.get('/', async (req, res) => {
     <img id="browserView" src="" alt="Browser View">
 
     <script>
-        const wsUrl = 'ws://${wsUrl}';
+        // Use wss:// for HTTPS, ws:// for HTTP
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = wsProtocol + '//${wsUrl}';
         let ws = null;
         let commandId = 1;
         let viewportWidth = window.innerWidth;
