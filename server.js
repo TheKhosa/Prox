@@ -11,6 +11,10 @@ const io = new Server(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
+    },
+    transports: ['websocket'],  // WebSocket only, skip polling
+    perMessageDeflate: {        // Enable compression
+        threshold: 1024
     }
 });
 
@@ -52,13 +56,13 @@ async function initBrowser() {
         // Set up CDP session for screencast
         cdpSession = await page.target().createCDPSession();
 
-        // Start screencast at 60fps for smooth video
+        // Start screencast optimized for network performance
         await cdpSession.send('Page.startScreencast', {
             format: 'jpeg',
-            quality: 90,
-            maxWidth: 1920,
-            maxHeight: 1080,
-            everyNthFrame: 1 // Every frame for 60fps
+            quality: 60,        // Reduced from 90 for smaller frames
+            maxWidth: 1280,     // Reduced from 1920
+            maxHeight: 720,     // Reduced from 1080
+            everyNthFrame: 2    // 30fps instead of 60fps for lower bandwidth
         });
 
         // Handle screencast frames
@@ -74,14 +78,15 @@ async function initBrowser() {
         });
 
         isReady = true;
-        console.log('Browser ready with screencast streaming at 60fps!');
-        console.log('\n🚀 Interactive Browser Server with 60fps streaming!');
+        console.log('Browser ready with optimized streaming!');
+        console.log('\n🚀 Interactive Browser Server (Network Optimized)');
         console.log(`\n👉 Open in browser: http://localhost:${PORT}`);
         console.log('\nFeatures:');
-        console.log('  ✓ Real-time 60fps video stream via browserless');
-        console.log('  ✓ YouTube playback supported');
+        console.log('  ✓ 30fps video stream (optimized for network)');
+        console.log('  ✓ Quality: 60, Resolution: 1280x720');
+        console.log('  ✓ WebSocket compression enabled');
         console.log('  ✓ Click, type, scroll, zoom');
-        console.log('  ✓ Smooth animations');
+        console.log('  ✓ Connected to browserless');
         console.log('\nBrowser is ready!');
 
     } catch (error) {

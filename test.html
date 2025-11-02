@@ -65,10 +65,12 @@
         let isProcessing = false;
 
         // Connect to socket.io (uses current server automatically)
-        const socket = io();
+        const socket = io({
+            transports: ['websocket']  // Skip polling, use WebSocket only
+        });
 
         socket.on('connect', () => {
-            console.log('Connected to server - receiving 60fps stream');
+            console.log('Connected to server - receiving optimized stream');
         });
 
         // Receive frames from server
