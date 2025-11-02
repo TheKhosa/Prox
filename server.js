@@ -269,58 +269,9 @@ app.get('/', (req, res) => {
             font-family: Arial, sans-serif;
         }
 
-        #urlBar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 40px;
-            background: #2c2c2c;
-            display: flex;
-            align-items: center;
-            padding: 0 10px;
-            gap: 10px;
-            z-index: 1001;
-            border-bottom: 1px solid #444;
-        }
-
-        #urlInput {
-            flex: 1;
-            height: 30px;
-            padding: 0 10px;
-            border: 1px solid #555;
-            border-radius: 4px;
-            background: #1a1a1a;
-            color: #fff;
-            font-size: 14px;
-            font-family: monospace;
-        }
-
-        #urlInput:focus {
-            outline: none;
-            border-color: #0a84ff;
-        }
-
-        #goButton {
-            height: 30px;
-            padding: 0 15px;
-            border: none;
-            border-radius: 4px;
-            background: #0a84ff;
-            color: #fff;
-            font-size: 14px;
-            cursor: pointer;
-            font-weight: 500;
-        }
-
-        #goButton:hover {
-            background: #0070e0;
-        }
-
         #browserView {
             width: 100vw;
-            height: calc(100vh - 40px);
-            margin-top: 40px;
+            height: 100vh;
             object-fit: contain;
             display: block;
             cursor: pointer;
@@ -340,10 +291,6 @@ app.get('/', (req, res) => {
     </style>
 </head>
 <body>
-    <div id="urlBar">
-        <input type="text" id="urlInput" placeholder="Enter URL..." spellcheck="false">
-        <button id="goButton">Go</button>
-    </div>
     <div id="status">Connecting...</div>
     <img id="browserView" src="" alt="Browser View">
 
@@ -355,8 +302,6 @@ app.get('/', (req, res) => {
 
         const status = document.getElementById('status');
         const browserView = document.getElementById('browserView');
-        const urlInput = document.getElementById('urlInput');
-        const goButton = document.getElementById('goButton');
 
         // Connect to socket.io
         const socket = io({
@@ -379,33 +324,6 @@ app.get('/', (req, res) => {
             }
         });
 
-        // Handle URL changes from server
-        socket.on('url-changed', (data) => {
-            urlInput.value = data.url;
-        });
-
-        // Handle URL navigation
-        function navigateToUrl() {
-            let url = urlInput.value.trim();
-            if (!url) return;
-
-            // Add protocol if missing
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                url = 'https://' + url;
-            }
-
-            socket.emit('navigate', { url });
-        }
-
-        goButton.addEventListener('click', navigateToUrl);
-
-        urlInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                navigateToUrl();
-            }
-        });
-
         socket.on('frame', (data) => {
             browserView.src = 'data:image/jpeg;base64,' + data.image;
         });
@@ -420,12 +338,16 @@ app.get('/', (req, res) => {
             console.log('Disconnected from server');
         });
 
-        let isDragging = false;
+        let isMouseDown = false;
+        let dragStarted = false;
         let dragStartTime = 0;
+        let dragStartX = 0;
+        let dragStartY = 0;
 
-        // Handle mousedown (start of potential drag)
+        // Handle mousedown (start of potential drag or click)
         browserView.addEventListener('mousedown', (event) => {
-            isDragging = true;
+            isMouseDown = true;
+            dragStarted = false;
             dragStartTime = Date.now();
 
             const rect = browserView.getBoundingClientRect();
@@ -435,15 +357,13 @@ app.get('/', (req, res) => {
             const scaleX = viewportWidth / rect.width;
             const scaleY = viewportHeight / rect.height;
 
-            const actualX = Math.round(x * scaleX);
-            const actualY = Math.round(y * scaleY);
-
-            socket.emit('mousedown', { x: actualX, y: actualY });
+            dragStartX = Math.round(x * scaleX);
+            dragStartY = Math.round(y * scaleY);
         });
 
         // Handle mousemove (dragging for text selection)
         browserView.addEventListener('mousemove', (event) => {
-            if (!isDragging) return;
+            if (!isMouseDown) return;
 
             const rect = browserView.getBoundingClientRect();
             const x = event.clientX - rect.left;
@@ -455,12 +375,22 @@ app.get('/', (req, res) => {
             const actualX = Math.round(x * scaleX);
             const actualY = Math.round(y * scaleY);
 
-            socket.emit('mousemove', { x: actualX, y: actualY });
+            const dragDistance = Math.sqrt(Math.pow(actualX - dragStartX, 2) + Math.pow(actualY - dragStartY, 2));
+
+            // Start drag if mouse moved more than 5 pixels
+            if (!dragStarted && dragDistance > 5) {
+                dragStarted = true;
+                socket.emit('mousedown', { x: dragStartX, y: dragStartY });
+            }
+
+            if (dragStarted) {
+                socket.emit('mousemove', { x: actualX, y: actualY });
+            }
         });
 
         // Handle mouseup (end of drag or click)
         browserView.addEventListener('mouseup', (event) => {
-            if (!isDragging) return;
+            if (!isMouseDown) return;
 
             const rect = browserView.getBoundingClientRect();
             const x = event.clientX - rect.left;
@@ -472,11 +402,11 @@ app.get('/', (req, res) => {
             const actualX = Math.round(x * scaleX);
             const actualY = Math.round(y * scaleY);
 
-            socket.emit('mouseup', { x: actualX, y: actualY });
-
-            // If it was a quick click (not a drag), also send click event
-            const dragDuration = Date.now() - dragStartTime;
-            if (dragDuration < 200) {
+            if (dragStarted) {
+                // Was a drag, send mouseup
+                socket.emit('mouseup', { x: actualX, y: actualY });
+            } else {
+                // Was a click, send click event
                 socket.emit('click', {
                     x: actualX,
                     y: actualY,
@@ -485,7 +415,8 @@ app.get('/', (req, res) => {
                 });
             }
 
-            isDragging = false;
+            isMouseDown = false;
+            dragStarted = false;
         });
 
         // Handle copy request from server
