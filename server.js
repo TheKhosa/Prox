@@ -1,9 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const path = require('path');
+const http = require('http');
+const WebSocket = require('ws');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
 app.use(cors());
 app.use(express.json());
@@ -22,16 +25,67 @@ async function getBrowserSession() {
     }
 }
 
-// Serve main page
-app.get('/', async (req, res) => {
-    const session = await getBrowserSession();
+// WebSocket proxy to browserless CDP
+wss.on('connection', async (clientWs) => {
+    console.log('Client WebSocket connected');
 
+    // Get browserless session
+    const session = await getBrowserSession();
     if (!session) {
-        return res.status(503).send('Browserless not available');
+        clientWs.send(JSON.stringify({ error: 'Browserless not available' }));
+        clientWs.close();
+        return;
     }
 
-    // Extract the WebSocket URL for CDP
-    const wsUrl = session.webSocketDebuggerUrl.replace('ws://', '');
+    // Connect to browserless CDP
+    const browserlessWs = new WebSocket(session.webSocketDebuggerUrl);
+
+    // Proxy messages from client to browserless
+    clientWs.on('message', (message) => {
+        if (browserlessWs.readyState === WebSocket.OPEN) {
+            browserlessWs.send(message);
+        }
+    });
+
+    // Proxy messages from browserless to client
+    browserlessWs.on('message', (message) => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(message);
+        }
+    });
+
+    // Handle browserless connection open
+    browserlessWs.on('open', () => {
+        console.log('Connected to browserless CDP');
+    });
+
+    // Handle errors and cleanup
+    browserlessWs.on('error', (error) => {
+        console.error('Browserless WebSocket error:', error);
+        clientWs.close();
+    });
+
+    browserlessWs.on('close', () => {
+        console.log('Browserless WebSocket closed');
+        clientWs.close();
+    });
+
+    clientWs.on('close', () => {
+        console.log('Client WebSocket closed');
+        browserlessWs.close();
+    });
+
+    clientWs.on('error', (error) => {
+        console.error('Client WebSocket error:', error);
+        browserlessWs.close();
+    });
+});
+
+// Serve main page
+app.get('/', async (req, res) => {
+    // Get the WebSocket URL for our proxy
+    const wsProtocol = req.protocol === 'https' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${req.get('host')}`;
 
     res.send(`
 <!DOCTYPE html>
@@ -79,9 +133,7 @@ app.get('/', async (req, res) => {
     <img id="browserView" src="" alt="Browser View">
 
     <script>
-        // Use wss:// for HTTPS, ws:// for HTTP
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = wsProtocol + '//${wsUrl}';
+        const wsUrl = '${wsUrl}';
         let ws = null;
         let commandId = 1;
         let viewportWidth = window.innerWidth;
@@ -90,7 +142,7 @@ app.get('/', async (req, res) => {
         const status = document.getElementById('status');
         const browserView = document.getElementById('browserView');
 
-        // Connect to CDP WebSocket
+        // Connect to our WebSocket proxy
         function connect() {
             status.textContent = 'Connecting to CDP...';
             ws = new WebSocket(wsUrl);
@@ -250,15 +302,15 @@ app.get('/info', async (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3002;
 
-app.listen(PORT, () => {
-    console.log(`\n🚀 Browser Remote (CDP Direct)`);
+server.listen(PORT, () => {
+    console.log(`\n🚀 Browser Remote (CDP Proxy)`);
     console.log(`\n👉 Open: http://localhost:${PORT}`);
-    console.log(`\nDirect Chrome DevTools Protocol connection`);
+    console.log(`\nWebSocket proxy to browserless CDP`);
     console.log(`Connected to: ${BROWSERLESS_URL}`);
     console.log(`\nFeatures:`);
+    console.log(`  ✓ WebSocket proxy for HTTPS compatibility`);
     console.log(`  ✓ Native CDP screencast`);
-    console.log(`  ✓ Direct WebSocket to browser`);
     console.log(`  ✓ Full interactivity (click, type, scroll)`);
-    console.log(`  ✓ No middleware overhead`);
+    console.log(`  ✓ Works over HTTPS`);
     console.log(`\nBrowser view only - no DevTools UI\n`);
 });
