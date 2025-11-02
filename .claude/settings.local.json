@@ -15,7 +15,9 @@
       "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: Real-time interactive browser streaming at 60fps\n\nFeatures:\n- 60fps video streaming using Chrome DevTools Protocol screencast\n- Full browser interactivity (click, type, scroll, zoom)\n- URL parameter-based navigation\n- Socket.io WebSocket for low-latency frame delivery\n- YouTube video playback support\n- Responsive viewport handling\n\nTech stack: Node.js, Express, Puppeteer, Socket.io\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git pull:*)",
       "Bash(git push:*)",
-      "Bash(curl http://145.239.253.161:3000/json/list)"
+      "Bash(curl http://145.239.253.161:3000/json/list)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nMigrate to remote browserless instance while maintaining 60fps interactivity\n\nChanges:\n- Connect to browserless at ws://145.239.253.161:3000 via Puppeteer\n- Maintain full 60fps screencast streaming via CDP\n- Keep all interactions: click, type, scroll, zoom\n- Update dependencies: add ws and axios packages\n- Update README to reflect browserless architecture\n\nAll features preserved:\n✓ Real-time 60fps video stream\n✓ Full browser interactivity\n✓ YouTube playback support\n✓ URL parameter navigation\n✓ Socket.io WebSocket delivery\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit -m \"$(cat <<''EOF''\nSwitch to puppeteer-core for render.com deployment\n\nChanges:\n- Replace puppeteer with puppeteer-core to avoid Chromium download\n- Reduces install size from ~300MB to ~2MB\n- Fixes render.com build timeout issues\n- No functionality changes - still connects to browserless\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
