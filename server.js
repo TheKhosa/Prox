@@ -106,6 +106,18 @@ io.on('connection', async (socket) => {
             socket.emit('frame', { image: data, metadata });
         });
 
+        // Listen for page navigation events
+        page.on('framenavigated', (frame) => {
+            if (frame === page.mainFrame()) {
+                const url = frame.url();
+                socket.emit('url-changed', { url });
+                console.log('Page navigated to:', url);
+            }
+        });
+
+        // Send initial URL
+        socket.emit('url-changed', { url: page.url() });
+
         // Store session
         activeSessions.set(socket.id, { page, cdpSession });
 
@@ -257,9 +269,58 @@ app.get('/', (req, res) => {
             font-family: Arial, sans-serif;
         }
 
+        #urlBar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 40px;
+            background: #2c2c2c;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            gap: 10px;
+            z-index: 1001;
+            border-bottom: 1px solid #444;
+        }
+
+        #urlInput {
+            flex: 1;
+            height: 30px;
+            padding: 0 10px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #1a1a1a;
+            color: #fff;
+            font-size: 14px;
+            font-family: monospace;
+        }
+
+        #urlInput:focus {
+            outline: none;
+            border-color: #0a84ff;
+        }
+
+        #goButton {
+            height: 30px;
+            padding: 0 15px;
+            border: none;
+            border-radius: 4px;
+            background: #0a84ff;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        #goButton:hover {
+            background: #0070e0;
+        }
+
         #browserView {
             width: 100vw;
-            height: 100vh;
+            height: calc(100vh - 40px);
+            margin-top: 40px;
             object-fit: contain;
             display: block;
             cursor: pointer;
@@ -267,7 +328,7 @@ app.get('/', (req, res) => {
 
         #status {
             position: fixed;
-            top: 10px;
+            top: 50px;
             right: 10px;
             background: rgba(0, 0, 0, 0.7);
             color: #0f0;
@@ -279,6 +340,10 @@ app.get('/', (req, res) => {
     </style>
 </head>
 <body>
+    <div id="urlBar">
+        <input type="text" id="urlInput" placeholder="Enter URL..." spellcheck="false">
+        <button id="goButton">Go</button>
+    </div>
     <div id="status">Connecting...</div>
     <img id="browserView" src="" alt="Browser View">
 
@@ -290,6 +355,8 @@ app.get('/', (req, res) => {
 
         const status = document.getElementById('status');
         const browserView = document.getElementById('browserView');
+        const urlInput = document.getElementById('urlInput');
+        const goButton = document.getElementById('goButton');
 
         // Connect to socket.io
         const socket = io({
@@ -299,6 +366,44 @@ app.get('/', (req, res) => {
         socket.on('connect', () => {
             status.textContent = 'Connected';
             console.log('Connected to server');
+
+            // Check for URL parameter and navigate if present
+            const params = new URLSearchParams(window.location.search);
+            const urlParam = params.get('url');
+            if (urlParam) {
+                let url = urlParam;
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    url = 'https://' + url;
+                }
+                socket.emit('navigate', { url });
+            }
+        });
+
+        // Handle URL changes from server
+        socket.on('url-changed', (data) => {
+            urlInput.value = data.url;
+        });
+
+        // Handle URL navigation
+        function navigateToUrl() {
+            let url = urlInput.value.trim();
+            if (!url) return;
+
+            // Add protocol if missing
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+            }
+
+            socket.emit('navigate', { url });
+        }
+
+        goButton.addEventListener('click', navigateToUrl);
+
+        urlInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                navigateToUrl();
+            }
         });
 
         socket.on('frame', (data) => {
