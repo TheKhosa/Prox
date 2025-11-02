@@ -1,143 +1,198 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
 const http = require('http');
-const WebSocket = require('ws');
+const { Server } = require('socket.io');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    },
+    transports: ['websocket'],
+    perMessageDeflate: {
+        threshold: 1024
+    }
+});
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-const BROWSERLESS_URL = 'http://145.239.253.161:3000';
+const BROWSERLESS_URL = 'ws://145.239.253.161:3000';
 
-// Create new browser session
-async function createBrowserSession() {
+let browser = null;
+let activeSessions = new Map(); // Track active client sessions
+
+// Initialize browser connection
+async function initBrowser() {
+    if (browser) return browser;
+
     try {
-        // Create a new browser page/session
-        const response = await axios.put(`${BROWSERLESS_URL}/json/new`);
-        return response.data;
+        console.log('Connecting to browserless at', BROWSERLESS_URL);
+        browser = await puppeteer.connect({
+            browserWSEndpoint: BROWSERLESS_URL
+        });
+
+        console.log('Connected to browserless');
+
+        browser.on('disconnected', () => {
+            console.log('Browser disconnected');
+            browser = null;
+            // Clean up all sessions
+            activeSessions.forEach((session) => {
+                if (session.page) session.page.close().catch(() => {});
+                if (session.cdpSession) session.cdpSession.detach().catch(() => {});
+            });
+            activeSessions.clear();
+        });
+
+        return browser;
     } catch (error) {
-        console.error('Failed to create browser session:', error.message);
-        // Fallback: try to get existing session
-        try {
-            const listResponse = await axios.get(`${BROWSERLESS_URL}/json/list`);
-            return listResponse.data[0];
-        } catch (fallbackError) {
-            console.error('Failed to get fallback session:', fallbackError.message);
-            return null;
-        }
+        console.error('Failed to connect to browserless:', error);
+        return null;
     }
 }
 
-// WebSocket proxy to browserless CDP
-wss.on('connection', async (clientWs) => {
-    console.log('Client WebSocket connected');
+// Socket.io connections
+io.on('connection', async (socket) => {
+    console.log('Client connected:', socket.id);
 
-    let browserlessWs = null;
-    let isConnecting = false;
-    let reconnectAttempts = 0;
-    const MAX_RECONNECT_ATTEMPTS = 3;
+    let page = null;
+    let cdpSession = null;
 
-    async function connectToBrowserless() {
-        if (isConnecting) return;
-        isConnecting = true;
-
-        try {
-            // Create fresh browserless session
-            const session = await createBrowserSession();
-            if (!session) {
-                console.error('No browserless session available');
-                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                    reconnectAttempts++;
-                    setTimeout(() => {
-                        isConnecting = false;
-                        connectToBrowserless();
-                    }, 2000);
-                } else {
-                    clientWs.send(JSON.stringify({ error: 'Browserless not available' }));
-                    clientWs.close();
-                }
-                return;
-            }
-
-            console.log('Connecting to browserless:', session.webSocketDebuggerUrl);
-            browserlessWs = new WebSocket(session.webSocketDebuggerUrl);
-
-            browserlessWs.on('open', () => {
-                console.log('Connected to browserless CDP');
-                reconnectAttempts = 0;
-                isConnecting = false;
-            });
-
-            browserlessWs.on('message', (message) => {
-                if (clientWs.readyState === WebSocket.OPEN) {
-                    clientWs.send(message);
-                }
-            });
-
-            browserlessWs.on('error', (error) => {
-                console.error('Browserless WebSocket error:', error.message);
-                isConnecting = false;
-            });
-
-            browserlessWs.on('close', (code, reason) => {
-                console.log('Browserless WebSocket closed:', code, reason.toString());
-                isConnecting = false;
-
-                // Try to reconnect if client is still connected
-                if (clientWs.readyState === WebSocket.OPEN && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                    reconnectAttempts++;
-                    console.log(`Reconnecting to browserless (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-                    setTimeout(() => connectToBrowserless(), 2000);
-                } else {
-                    clientWs.close();
-                }
-            });
-
-        } catch (error) {
-            console.error('Error connecting to browserless:', error);
-            isConnecting = false;
-            clientWs.close();
+    try {
+        // Ensure browser is connected
+        const browserInstance = await initBrowser();
+        if (!browserInstance) {
+            socket.emit('error', { message: 'Failed to connect to browser' });
+            socket.disconnect();
+            return;
         }
+
+        // Create new page for this client
+        page = await browserInstance.newPage();
+        await page.setViewport({
+            width: 1280,
+            height: 720,
+            deviceScaleFactor: 1
+        });
+
+        console.log('Created new page for client:', socket.id);
+
+        // Navigate to initial page
+        await page.goto('https://www.google.com', {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+        });
+
+        // Set up CDP session for screencast
+        cdpSession = await page.target().createCDPSession();
+
+        // Start screencast
+        await cdpSession.send('Page.startScreencast', {
+            format: 'jpeg',
+            quality: 80,
+            maxWidth: 1280,
+            maxHeight: 720,
+            everyNthFrame: 1
+        });
+
+        // Handle screencast frames
+        cdpSession.on('Page.screencastFrame', async ({ data, metadata, sessionId }) => {
+            await cdpSession.send('Page.screencastFrameAck', { sessionId });
+            socket.emit('frame', { image: data, metadata });
+        });
+
+        // Store session
+        activeSessions.set(socket.id, { page, cdpSession });
+
+        // Handle client interactions
+        socket.on('click', async (data) => {
+            try {
+                const { x, y, width, height } = data;
+
+                // Update viewport if needed
+                if (width && height) {
+                    const viewport = page.viewport();
+                    if (viewport.width !== width || viewport.height !== height) {
+                        await page.setViewport({
+                            width: parseInt(width),
+                            height: parseInt(height),
+                            deviceScaleFactor: 1
+                        });
+                    }
+                }
+
+                await page.mouse.click(x, y);
+            } catch (error) {
+                console.error('Click error:', error.message);
+            }
+        });
+
+        socket.on('type', async (data) => {
+            try {
+                const { key } = data;
+                if (key) {
+                    await page.keyboard.press(key);
+                }
+            } catch (error) {
+                console.error('Type error:', error.message);
+            }
+        });
+
+        socket.on('navigate', async (data) => {
+            try {
+                const { url } = data;
+                await page.goto(url, {
+                    waitUntil: 'networkidle2',
+                    timeout: 30000
+                });
+            } catch (error) {
+                console.error('Navigate error:', error.message);
+            }
+        });
+
+        socket.on('scroll', async (data) => {
+            try {
+                const { deltaX, deltaY } = data;
+                await page.mouse.wheel({ deltaX: deltaX || 0, deltaY: deltaY || 0 });
+            } catch (error) {
+                console.error('Scroll error:', error.message);
+            }
+        });
+
+    } catch (error) {
+        console.error('Error setting up client session:', error);
+        socket.emit('error', { message: error.message });
+        socket.disconnect();
     }
 
-    // Proxy messages from client to browserless
-    clientWs.on('message', (message) => {
-        if (browserlessWs && browserlessWs.readyState === WebSocket.OPEN) {
-            browserlessWs.send(message);
+    // Cleanup on disconnect
+    socket.on('disconnect', async () => {
+        console.log('Client disconnected:', socket.id);
+
+        const session = activeSessions.get(socket.id);
+        if (session) {
+            try {
+                if (session.cdpSession) {
+                    await session.cdpSession.detach();
+                }
+                if (session.page) {
+                    await session.page.close();
+                }
+            } catch (error) {
+                console.error('Cleanup error:', error.message);
+            }
+            activeSessions.delete(socket.id);
         }
     });
-
-    clientWs.on('close', () => {
-        console.log('Client WebSocket closed');
-        if (browserlessWs) {
-            browserlessWs.close();
-        }
-    });
-
-    clientWs.on('error', (error) => {
-        console.error('Client WebSocket error:', error.message);
-        if (browserlessWs) {
-            browserlessWs.close();
-        }
-    });
-
-    // Initial connection
-    await connectToBrowserless();
 });
 
 // Serve main page
-app.get('/', async (req, res) => {
-    // Get the WebSocket URL for our proxy
-    // Check X-Forwarded-Proto for reverse proxy setups (like render.com)
-    const protocol = req.get('X-Forwarded-Proto') || req.protocol;
-    const wsProtocol = protocol === 'https' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${req.get('host')}`;
-
+app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
 <html lang="en">
@@ -183,72 +238,43 @@ app.get('/', async (req, res) => {
     <div id="status">Connecting...</div>
     <img id="browserView" src="" alt="Browser View">
 
+    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const wsUrl = '${wsUrl}';
-        let ws = null;
-        let commandId = 1;
         let viewportWidth = window.innerWidth;
         let viewportHeight = window.innerHeight;
+        let isProcessing = false;
 
         const status = document.getElementById('status');
         const browserView = document.getElementById('browserView');
 
-        // Connect to our WebSocket proxy
-        function connect() {
-            status.textContent = 'Connecting to CDP...';
-            ws = new WebSocket(wsUrl);
+        // Connect to socket.io
+        const socket = io({
+            transports: ['websocket']
+        });
 
-            ws.onopen = () => {
-                status.textContent = 'Connected';
+        socket.on('connect', () => {
+            status.textContent = 'Connected';
+            console.log('Connected to server');
+        });
 
-                // Start screencast
-                sendCommand('Page.startScreencast', {
-                    format: 'jpeg',
-                    quality: 80,
-                    maxWidth: viewportWidth,
-                    maxHeight: viewportHeight,
-                    everyNthFrame: 1
-                });
-            };
+        socket.on('frame', (data) => {
+            browserView.src = 'data:image/jpeg;base64,' + data.image;
+        });
 
-            ws.onmessage = (event) => {
-                const message = JSON.parse(event.data);
+        socket.on('error', (data) => {
+            status.textContent = 'Error: ' + data.message;
+            console.error('Server error:', data.message);
+        });
 
-                // Handle screencast frame
-                if (message.method === 'Page.screencastFrame') {
-                    const { data, sessionId } = message.params;
-
-                    // Display frame
-                    browserView.src = 'data:image/jpeg;base64,' + data;
-
-                    // Acknowledge frame
-                    sendCommand('Page.screencastFrameAck', { sessionId });
-                }
-            };
-
-            ws.onerror = (error) => {
-                status.textContent = 'Connection error';
-                console.error('WebSocket error:', error);
-            };
-
-            ws.onclose = () => {
-                status.textContent = 'Disconnected. Reconnecting...';
-                setTimeout(connect, 2000);
-            };
-        }
-
-        function sendCommand(method, params = {}) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    id: commandId++,
-                    method: method,
-                    params: params
-                }));
-            }
-        }
+        socket.on('disconnect', () => {
+            status.textContent = 'Disconnected';
+            console.log('Disconnected from server');
+        });
 
         // Handle click
-        browserView.addEventListener('click', (event) => {
+        browserView.addEventListener('click', async (event) => {
+            if (isProcessing) return;
+
             const rect = browserView.getBoundingClientRect();
             const x = event.clientX - rect.left;
             const y = event.clientY - rect.top;
@@ -259,109 +285,69 @@ app.get('/', async (req, res) => {
             const actualX = Math.round(x * scaleX);
             const actualY = Math.round(y * scaleY);
 
-            // Send mouse click via CDP
-            sendCommand('Input.dispatchMouseEvent', {
-                type: 'mousePressed',
+            isProcessing = true;
+            socket.emit('click', {
                 x: actualX,
                 y: actualY,
-                button: 'left',
-                clickCount: 1
+                width: viewportWidth,
+                height: viewportHeight
             });
-
-            setTimeout(() => {
-                sendCommand('Input.dispatchMouseEvent', {
-                    type: 'mouseReleased',
-                    x: actualX,
-                    y: actualY,
-                    button: 'left',
-                    clickCount: 1
-                });
-            }, 50);
+            setTimeout(() => { isProcessing = false; }, 100);
         });
 
         // Handle keyboard
-        document.addEventListener('keydown', (event) => {
-            if (event.target.tagName === 'INPUT') return;
+        document.addEventListener('keydown', async (event) => {
+            if (isProcessing || event.target.tagName === 'INPUT') return;
 
-            event.preventDefault();
+            if (event.key === 'F5' || (event.ctrlKey && event.key === 'r')) {
+                event.preventDefault();
+                return;
+            }
 
-            sendCommand('Input.dispatchKeyEvent', {
-                type: 'keyDown',
-                key: event.key,
-                code: event.code,
-                text: event.key.length === 1 ? event.key : undefined
-            });
-        });
-
-        document.addEventListener('keyup', (event) => {
-            if (event.target.tagName === 'INPUT') return;
-
-            event.preventDefault();
-
-            sendCommand('Input.dispatchKeyEvent', {
-                type: 'keyUp',
-                key: event.key,
-                code: event.code
-            });
+            if (event.key.length === 1 || ['Enter', 'Backspace', 'Tab'].includes(event.key)) {
+                event.preventDefault();
+                isProcessing = true;
+                socket.emit('type', { key: event.key });
+                setTimeout(() => { isProcessing = false; }, 100);
+            }
         });
 
         // Handle scroll
         browserView.addEventListener('wheel', (event) => {
-            event.preventDefault();
+            if (isProcessing) return;
 
-            sendCommand('Input.dispatchMouseEvent', {
-                type: 'mouseWheel',
-                x: 0,
-                y: 0,
+            event.preventDefault();
+            isProcessing = true;
+            socket.emit('scroll', {
                 deltaX: event.deltaX,
                 deltaY: event.deltaY
             });
+            setTimeout(() => { isProcessing = false; }, 100);
         }, { passive: false });
 
         // Handle resize
         window.addEventListener('resize', () => {
             viewportWidth = window.innerWidth;
             viewportHeight = window.innerHeight;
-
-            // Restart screencast with new dimensions
-            sendCommand('Page.stopScreencast');
-            setTimeout(() => {
-                sendCommand('Page.startScreencast', {
-                    format: 'jpeg',
-                    quality: 80,
-                    maxWidth: viewportWidth,
-                    maxHeight: viewportHeight,
-                    everyNthFrame: 1
-                });
-            }, 100);
         });
-
-        // Start connection
-        connect();
     </script>
 </body>
 </html>
     `);
 });
 
-// Get browser info
-app.get('/info', async (req, res) => {
-    const session = await createBrowserSession();
-    res.json(session || { error: 'No browser session' });
-});
-
 // Start server
 const PORT = process.env.PORT || 3002;
 
 server.listen(PORT, () => {
-    console.log(`\n🚀 Browser Remote (CDP Proxy)`);
+    console.log(`\n🚀 Browser Remote (Puppeteer Proxy)`);
     console.log(`\n👉 Open: http://localhost:${PORT}`);
-    console.log(`\nWebSocket proxy to browserless CDP`);
+    console.log(`\nPuppeteer proxy to browserless`);
     console.log(`Connected to: ${BROWSERLESS_URL}`);
     console.log(`\nFeatures:`);
-    console.log(`  ✓ WebSocket proxy for HTTPS compatibility`);
-    console.log(`  ✓ Native CDP screencast`);
+    console.log(`  ✓ Puppeteer manages CDP connection`);
+    console.log(`  ✓ Socket.io for frame delivery`);
+    console.log(`  ✓ Each client gets own browser page`);
     console.log(`  ✓ Full interactivity (click, type, scroll)`);
-    console.log(`  ✓ Works over HTTPS`);
-    console.log(`\nBrowser view only - no DevTools UI\n`);
+    console.log(`\nBrowser view only\n`);
 });
