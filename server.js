@@ -16,8 +16,9 @@ const io = new Server(server, {
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname)); // Serve static files
+app.use(express.static(__dirname));
 
+const BROWSERLESS_URL = 'ws://145.239.253.161:3000';
 let browser = null;
 let page = null;
 let isReady = false;
@@ -26,17 +27,14 @@ let cdpSession = null;
 // Initialize browser
 async function initBrowser() {
     try {
-        console.log('Launching browser...');
-        browser = await puppeteer.launch({
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage'
-            ]
+        console.log('Connecting to browserless at', BROWSERLESS_URL);
+
+        browser = await puppeteer.connect({
+            browserWSEndpoint: BROWSERLESS_URL
         });
 
-        page = await browser.newPage();
+        const pages = await browser.pages();
+        page = pages[0] || await browser.newPage();
 
         // Set default viewport
         await page.setViewport({
@@ -77,6 +75,14 @@ async function initBrowser() {
 
         isReady = true;
         console.log('Browser ready with screencast streaming at 60fps!');
+        console.log('\n🚀 Interactive Browser Server with 60fps streaming!');
+        console.log(`\n👉 Open in browser: http://localhost:${PORT}`);
+        console.log('\nFeatures:');
+        console.log('  ✓ Real-time 60fps video stream via browserless');
+        console.log('  ✓ YouTube playback supported');
+        console.log('  ✓ Click, type, scroll, zoom');
+        console.log('  ✓ Smooth animations');
+        console.log('\nBrowser is ready!');
 
     } catch (error) {
         console.error('Browser init error:', error);
@@ -84,7 +90,7 @@ async function initBrowser() {
     }
 }
 
-// Handle socket connections
+// Socket.io connections
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
 
@@ -96,36 +102,6 @@ io.on('connection', (socket) => {
 // Get status
 app.get('/status', (req, res) => {
     res.json({ ready: isReady });
-});
-
-// Get screenshot
-app.get('/screenshot', async (req, res) => {
-    if (!isReady || !page) {
-        return res.status(503).json({ error: 'Browser not ready' });
-    }
-
-    try {
-        const width = parseInt(req.query.width) || 1280;
-        const height = parseInt(req.query.height) || 720;
-
-        // Update viewport if changed
-        const viewport = page.viewport();
-        if (viewport.width !== width || viewport.height !== height) {
-            await page.setViewport({ width, height, deviceScaleFactor: 1 });
-        }
-
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
-
-    } catch (error) {
-        console.error('Screenshot error:', error);
-        res.status(500).json({ error: error.message });
-    }
 });
 
 // Handle click
@@ -154,17 +130,7 @@ app.post('/click', async (req, res) => {
         // Perform click
         await page.mouse.click(x, y);
 
-        // Wait a moment for any page changes
-        await new Promise(resolve => setTimeout(resolve, 200));
-
-        // Take screenshot
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Click error:', error);
@@ -189,17 +155,7 @@ app.post('/type', async (req, res) => {
             await page.keyboard.press(key);
         }
 
-        // Wait a moment
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        // Take screenshot
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Type error:', error);
@@ -223,13 +179,7 @@ app.post('/navigate', async (req, res) => {
             timeout: 30000
         });
 
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Navigate error:', error);
@@ -251,16 +201,7 @@ app.post('/scroll', async (req, res) => {
         // Scroll using mouse wheel
         await page.mouse.wheel({ deltaX: deltaX || 0, deltaY: deltaY || 0 });
 
-        // Wait a moment for scroll to complete
-        await new Promise(resolve => setTimeout(resolve, 30));
-
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Scroll error:', error);
@@ -289,13 +230,7 @@ app.post('/zoom', async (req, res) => {
             deviceScaleFactor: scale || 1
         });
 
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Zoom error:', error);
@@ -317,27 +252,12 @@ app.post('/reload', async (req, res) => {
             timeout: 30000
         });
 
-        const screenshot = await page.screenshot({
-            type: 'png',
-            fullPage: false
-        });
-
-        res.set('Content-Type', 'image/png');
-        res.send(screenshot);
+        res.json({ success: true });
 
     } catch (error) {
         console.error('Reload error:', error);
         res.status(500).json({ error: error.message });
     }
-});
-
-// Cleanup on exit
-process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
-    if (browser) {
-        await browser.close();
-    }
-    process.exit(0);
 });
 
 // Serve test.html as index
@@ -350,16 +270,18 @@ const PORT = 3001;
 
 initBrowser().then(() => {
     server.listen(PORT, () => {
-        console.log(`\n🚀 Interactive Browser Server with 60fps streaming!`);
-        console.log(`\n👉 Open in browser: http://localhost:${PORT}`);
-        console.log('\nFeatures:');
-        console.log('  ✓ Real-time 60fps video stream');
-        console.log('  ✓ YouTube playback supported');
-        console.log('  ✓ Click, type, scroll, zoom');
-        console.log('  ✓ Smooth animations');
-        console.log('\nBrowser is ready!');
+        console.log(`Server listening on port ${PORT}`);
     });
 }).catch(error => {
     console.error('Failed to start server:', error);
     process.exit(1);
+});
+
+// Cleanup on exit
+process.on('SIGINT', async () => {
+    console.log('\nShutting down...');
+    if (browser) {
+        await browser.disconnect();
+    }
+    process.exit(0);
 });

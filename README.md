@@ -1,6 +1,6 @@
 # Prox - Real-time Interactive Browser Streaming
 
-A high-performance web application that provides real-time browser streaming at 60fps with full interactivity. Built with Node.js, Puppeteer, Socket.io, and Chrome DevTools Protocol.
+A high-performance web application that provides real-time browser streaming at 60fps with full interactivity. Connects to a remote browserless instance for scalable browser automation. Built with Node.js, Puppeteer, Socket.io, and Chrome DevTools Protocol.
 
 ## Features
 
@@ -76,14 +76,15 @@ The system automatically adds `https://` if no protocol is specified.
 ### Technology Stack
 
 - **Backend**: Node.js + Express
-- **Browser Automation**: Puppeteer
+- **Browser Automation**: Puppeteer connected to remote browserless instance
+- **Browserless Instance**: ws://145.239.253.161:3000
 - **Real-time Communication**: Socket.io
 - **Streaming Protocol**: Chrome DevTools Protocol (CDP)
 
 ### How It Works
 
 1. **Server** (`server.js`):
-   - Launches a headless Chrome browser via Puppeteer
+   - Connects to remote browserless instance via Puppeteer
    - Establishes CDP session for screencast streaming
    - Streams JPEG frames at 60fps to connected clients
    - Handles user interactions (click, type, scroll, zoom)
