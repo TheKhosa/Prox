@@ -134,12 +134,56 @@ io.on('connection', async (socket) => {
 
         socket.on('type', async (data) => {
             try {
-                const { key } = data;
-                if (key) {
+                const { key, text } = data;
+                if (text) {
+                    // Type full text (for paste)
+                    await page.keyboard.type(text);
+                } else if (key) {
                     await page.keyboard.press(key);
                 }
             } catch (error) {
                 console.error('Type error:', error.message);
+            }
+        });
+
+        socket.on('mousedown', async (data) => {
+            try {
+                const { x, y } = data;
+                await page.mouse.move(x, y);
+                await page.mouse.down();
+            } catch (error) {
+                console.error('Mousedown error:', error.message);
+            }
+        });
+
+        socket.on('mousemove', async (data) => {
+            try {
+                const { x, y } = data;
+                await page.mouse.move(x, y);
+            } catch (error) {
+                console.error('Mousemove error:', error.message);
+            }
+        });
+
+        socket.on('mouseup', async (data) => {
+            try {
+                const { x, y } = data;
+                await page.mouse.move(x, y);
+                await page.mouse.up();
+            } catch (error) {
+                console.error('Mouseup error:', error.message);
+            }
+        });
+
+        socket.on('copy', async () => {
+            try {
+                // Get selected text from the browser
+                const selectedText = await page.evaluate(() => {
+                    return window.getSelection().toString();
+                });
+                socket.emit('copied-text', { text: selectedText });
+            } catch (error) {
+                console.error('Copy error:', error.message);
             }
         });
 
@@ -271,9 +315,13 @@ app.get('/', (req, res) => {
             console.log('Disconnected from server');
         });
 
-        // Handle click
-        browserView.addEventListener('click', async (event) => {
-            if (isProcessing) return;
+        let isDragging = false;
+        let dragStartTime = 0;
+
+        // Handle mousedown (start of potential drag)
+        browserView.addEventListener('mousedown', (event) => {
+            isDragging = true;
+            dragStartTime = Date.now();
 
             const rect = browserView.getBoundingClientRect();
             const x = event.clientX - rect.left;
@@ -285,19 +333,91 @@ app.get('/', (req, res) => {
             const actualX = Math.round(x * scaleX);
             const actualY = Math.round(y * scaleY);
 
-            isProcessing = true;
-            socket.emit('click', {
-                x: actualX,
-                y: actualY,
-                width: viewportWidth,
-                height: viewportHeight
-            });
-            setTimeout(() => { isProcessing = false; }, 100);
+            socket.emit('mousedown', { x: actualX, y: actualY });
+        });
+
+        // Handle mousemove (dragging for text selection)
+        browserView.addEventListener('mousemove', (event) => {
+            if (!isDragging) return;
+
+            const rect = browserView.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            const scaleX = viewportWidth / rect.width;
+            const scaleY = viewportHeight / rect.height;
+
+            const actualX = Math.round(x * scaleX);
+            const actualY = Math.round(y * scaleY);
+
+            socket.emit('mousemove', { x: actualX, y: actualY });
+        });
+
+        // Handle mouseup (end of drag or click)
+        browserView.addEventListener('mouseup', (event) => {
+            if (!isDragging) return;
+
+            const rect = browserView.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            const scaleX = viewportWidth / rect.width;
+            const scaleY = viewportHeight / rect.height;
+
+            const actualX = Math.round(x * scaleX);
+            const actualY = Math.round(y * scaleY);
+
+            socket.emit('mouseup', { x: actualX, y: actualY });
+
+            // If it was a quick click (not a drag), also send click event
+            const dragDuration = Date.now() - dragStartTime;
+            if (dragDuration < 200) {
+                socket.emit('click', {
+                    x: actualX,
+                    y: actualY,
+                    width: viewportWidth,
+                    height: viewportHeight
+                });
+            }
+
+            isDragging = false;
+        });
+
+        // Handle copy request from server
+        socket.on('copied-text', async (data) => {
+            try {
+                await navigator.clipboard.writeText(data.text);
+                console.log('Text copied to clipboard:', data.text);
+            } catch (error) {
+                console.error('Failed to copy to clipboard:', error);
+            }
         });
 
         // Handle keyboard
         document.addEventListener('keydown', async (event) => {
             if (isProcessing || event.target.tagName === 'INPUT') return;
+
+            // Handle copy (Ctrl+C or Cmd+C)
+            if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
+                event.preventDefault();
+                socket.emit('copy');
+                return;
+            }
+
+            // Handle paste (Ctrl+V or Cmd+V)
+            if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
+                event.preventDefault();
+                try {
+                    const text = await navigator.clipboard.readText();
+                    if (text) {
+                        socket.emit('type', { text: text });
+                        console.log('Pasted text:', text);
+                    }
+                } catch (error) {
+                    console.error('Failed to read clipboard:', error);
+                }
+                return;
+            }
 
             if (event.key === 'F5' || (event.ctrlKey && event.key === 'r')) {
                 event.preventDefault();
