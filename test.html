@@ -58,13 +58,14 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const SERVER_URL = 'http://localhost:3001';
+        // Auto-detect server URL (works locally and on render.com)
+        const SERVER_URL = window.location.origin;
         let viewportWidth = window.innerWidth;
         let viewportHeight = window.innerHeight;
         let isProcessing = false;
 
-        // Connect to socket.io
-        const socket = io(SERVER_URL);
+        // Connect to socket.io (uses current server automatically)
+        const socket = io();
 
         socket.on('connect', () => {
             console.log('Connected to server - receiving 60fps stream');
